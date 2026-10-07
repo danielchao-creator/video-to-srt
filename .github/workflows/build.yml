@@ -14,11 +14,11 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            asset_name: VideoToSRT-Windows.exe
-            file_path: dist/VideoToSRT.exe
+            asset_name: VideoToSRT-Windows.zip
+            file_path: dist/VideoToSRT-Windows.zip
           - os: macos-latest
-            asset_name: VideoToSRT-macOS
-            file_path: dist/VideoToSRT
+            asset_name: VideoToSRT-macOS.zip
+            file_path: dist/VideoToSRT-macOS.zip
 
     runs-on: ${{ matrix.os }}
 
@@ -37,15 +37,19 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller static-ffmpeg
 
-    - name: Build with PyInstaller (Windows)
+    - name: Build and Zip (Windows)
       if: runner.os == 'Windows'
       run: |
-        pyinstaller --noconsole --onefile --collect-all faster_whisper --name VideoToSRT app.py
+        # 移除了 --onefile 與 PySide6，改用資料夾模式，並自動壓縮成 ZIP
+        pyinstaller --noconsole --collect-all faster_whisper --name VideoToSRT app.py
+        Compress-Archive -Path dist\VideoToSRT\* -DestinationPath dist\VideoToSRT-Windows.zip
 
-    - name: Build with PyInstaller (macOS)
+    - name: Build and Zip (macOS)
       if: runner.os == 'macOS'
       run: |
-        pyinstaller --noconsole --onefile --collect-all faster_whisper --name VideoToSRT app.py
+        # macOS 加上 --windowed 產生 .app，並自動壓縮成 ZIP
+        pyinstaller --noconsole --windowed --collect-all faster_whisper --name VideoToSRT app.py
+        cd dist && zip -r VideoToSRT-macOS.zip .
 
     - name: Create or Update Release
       uses: ncipollo/release-action@v1
