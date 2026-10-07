@@ -1,11 +1,12 @@
-name: Build Cross-Platform Executables
+name: Build and Release Cross-Platform Executables
 
 on:
   push:
     tags:
-      - 'v*' # 當你在 Git 推送版本標籤 (例如 v1.0.0) 時自動觸發打包
+      - 'v*'
+
 permissions:
-  contents: write # 確保有權限建立 Release      
+  contents: write
 
 jobs:
   build:
@@ -13,11 +14,11 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact_name: VideoToSRT-Windows.exe
-            asset_name: VideoToSRT-Windows
+            asset_name: VideoToSRT-Windows.exe
+            file_path: dist/VideoToSRT.exe
           - os: macos-latest
-            artifact_name: VideoToSRT-macOS
             asset_name: VideoToSRT-macOS
+            file_path: dist/VideoToSRT
 
     runs-on: ${{ matrix.os }}
 
@@ -39,15 +40,17 @@ jobs:
     - name: Build with PyInstaller (Windows)
       if: runner.os == 'Windows'
       run: |
-        pyinstaller --noconsole --onefile --collect-all faster_whisper --exclude-module PySide6.Qt3DAnimation --exclude-module PySide6.Qt3DCore --exclude-module PySide6.Qt3DRender --exclude-module PySide6.QtWebEngineCore --name VideoToSRT app.py
+        pyinstaller --noconsole --onefile --collect-all faster_whisper --name VideoToSRT app.py
 
     - name: Build with PyInstaller (macOS)
       if: runner.os == 'macOS'
       run: |
-        pyinstaller --noconsole --onefile --collect-all faster_whisper --exclude-module PySide6.Qt3DAnimation --exclude-module PySide6.Qt3DCore --exclude-module PySide6.Qt3DRender --exclude-module PySide6.QtWebEngineCore --name VideoToSRT app.py
+        pyinstaller --noconsole --onefile --collect-all faster_whisper --name VideoToSRT app.py
 
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
+    - name: Create or Update Release
+      uses: ncipollo/release-action@v1
       with:
-        name: ${{ matrix.asset_name }}
-        path: dist/*
+        artifacts: ${{ matrix.file_path }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+        allowUpdates: true
+        recreateRelease: false
