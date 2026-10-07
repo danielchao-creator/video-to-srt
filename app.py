@@ -1,3 +1,15 @@
+import sys
+import os
+
+# 解決 PyInstaller --noconsole 模式下，套件嘗試輸出文字卻找不到終端機導致崩潰的問題
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w')
+
+# 以下保留你原本的程式碼，例如：
+# import static_ffmpeg
+# ...
 import static_ffmpeg
 static_ffmpeg.add_paths()
 import os
