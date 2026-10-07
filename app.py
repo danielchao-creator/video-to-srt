@@ -15,10 +15,10 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QProgressBar, QTextEdit, QComboBox
 )
-from PySide6.QtCore import QThread, Signal, Slot
+from PySide6.QtCore import QThread, Signal
 
 
-# 2. 背景轉譯線程（支援 暫停/恢復/停止 與 繁體轉換）
+# 2. 背景轉譯線程（支援 暫停/恢復/停止、繁體轉換與模型快取目錄重定向）
 class TranscribeWorker(QThread):
     progress_signal = Signal(int)
     log_signal = Signal(str)
@@ -50,9 +50,20 @@ class TranscribeWorker(QThread):
 
     def run(self):
         try:
-            self.log_signal.emit("正在載入 Faster-Whisper 模型...")
+            # 指定模型下載快取目錄至 D 槽，避免佔用或擠爆 C 槽
+            cache_dir = r"D:\whisper_cache"
+            os.makedirs(cache_dir, exist_ok=True)
+
+            self.log_signal.emit(f"正在載入 Faster-Whisper 模型 ({self.model_size})...")
+            self.log_signal.emit(f"模型快取位置: {cache_dir}")
+            
             from faster_whisper import WhisperModel
-            model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
+            model = WhisperModel(
+                self.model_size, 
+                device="cpu", 
+                compute_type="int8", 
+                download_root=cache_dir
+            )
 
             self.log_signal.emit(f"開始分析影片: {os.path.basename(self.video_path)}")
             segments, info = model.transcribe(self.video_path, beam_size=5)
