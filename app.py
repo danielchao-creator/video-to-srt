@@ -1,188 +1,260 @@
 import sys
 import os
 
-# 解決 PyInstaller --noconsole 模式下，套件嘗試輸出文字卻找不到終端機導致崩潰的問題
+# 1. 解決 PyInstaller --noconsole 模式下 static_ffmpeg / whisper 輸出 NoneType 崩潰問題
 if sys.stdout is None:
     sys.stdout = open(os.devnull, 'w')
 if sys.stderr is None:
     sys.stderr = open(os.devnull, 'w')
 
-# 以下保留你原本的程式碼，例如：
-# import static_ffmpeg
-# ...
 import static_ffmpeg
 static_ffmpeg.add_paths()
-import os
-import sys
-import datetime
+
+import opencc
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QFileDialog, QComboBox, QProgressBar, QTextEdit
+    QPushButton, QLabel, QFileDialog, QProgressBar, QTextEdit, QComboBox
 )
-from PySide6.QtCore import QThread, Signal, Qt
-from faster_whisper import WhisperModel
+from PySide6.QtCore import QThread, Signal, Slot
 
-def format_timestamp(seconds: float) -> str:
-    """將秒數轉換為 SRT 的時間戳格式 (00:00:00,000)"""
-    td = datetime.timedelta(seconds=seconds)
-    total_seconds = int(td.total_seconds())
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-    secs = total_seconds % 60
-    millis = int((seconds - int(seconds)) * 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
-class TranscribeThread(QThread):
-    """背景語音辨識線程，防止 GUI 凍結"""
-    progress_signal = Signal(str)
+# 2. 背景轉譯線程（支援 暫停/恢復/停止 與 繁體轉換）
+class TranscribeWorker(QThread):
+    progress_signal = Signal(int)
+    log_signal = Signal(str)
     finished_signal = Signal(str)
     error_signal = Signal(str)
 
-    def __init__(self, video_path: str, output_path: str, model_size: str, language: str):
+    def __init__(self, video_path, output_dir, model_size="base"):
         super().__init__()
         self.video_path = video_path
-        self.output_path = output_path
+        self.output_dir = output_dir
         self.model_size = model_size
-        self.language = None if language == "自動偵測 (Auto)" else language
+        
+        # 控制狀態標記
+        self._is_paused = False
+        self._is_stopped = False
+        self.cc = opencc.OpenCC('s2twp')  # 簡體轉臺灣繁體
+
+    def pause(self):
+        self._is_paused = True
+        self.log_signal.emit("⏸️ 已按下暫停...")
+
+    def resume(self):
+        self._is_paused = False
+        self.log_signal.emit("▶️ 恢復轉譯任務...")
+
+    def stop(self):
+        self._is_stopped = True
+        self.log_signal.emit("⏹️ 正在停止任務...")
 
     def run(self):
         try:
-            self.progress_signal.emit("正在載入語音辨識模型（首次執行會自動下載）...")
-            
-            # 使用 CPU 模式（預設 compute_type="int8" 增強 CPU 處理速度）
-            # 若使用 Nvidia 顯卡可調成 device="cuda", compute_type="float16"
+            self.log_signal.emit("正在載入 Faster-Whisper 模型...")
+            from faster_whisper import WhisperModel
             model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
 
-            self.progress_signal.emit("開始掃描並辨識影片聲音內容...")
-            segments, info = model.transcribe(
-                self.video_path,
-                language=self.language,
-                beam_size=5
-            )
+            self.log_signal.emit(f"開始分析影片: {os.path.basename(self.video_path)}")
+            segments, info = model.transcribe(self.video_path, beam_size=5)
 
-            self.progress_signal.emit(f"偵測到語言：{info.language} (信心度：{info.language_probability:.2f})")
+            total_duration = info.duration if info.duration > 0 else 1.0
+            
+            # 設定輸出檔名 (.srt)
+            base_name = os.path.splitext(os.path.basename(self.video_path))[0]
+            srt_filename = f"{base_name}.srt"
+            srt_path = os.path.join(self.output_dir, srt_filename)
 
-            srt_content = []
+            self.log_signal.emit(f"字幕將儲存至: {srt_path}")
+
+            srt_lines = []
             for i, segment in enumerate(segments, start=1):
-                start_str = format_timestamp(segment.start)
-                end_str = format_timestamp(segment.end)
-                text = segment.text.strip()
-                
-                # 組合 SRT 單一區塊
-                srt_block = f"{i}\n{start_str} --> {end_str}\n{text}\n"
-                srt_content.append(srt_block)
-                
-                # 即時回傳進度日誌
-                self.progress_signal.emit(f"[{start_str} -> {end_str}] {text}")
+                # 檢查是否請求停止
+                if self._is_stopped:
+                    self.log_signal.emit("❌ 任務已被使用者手動取消。")
+                    return
 
-            # 寫入 SRT 檔案 (UTF-8 編碼)
-            with open(self.output_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(srt_content))
+                # 檢查是否暫停（迴圈等待）
+                while self._is_paused:
+                    if self._is_stopped:
+                        self.log_signal.emit("❌ 任務已被使用者手動取消。")
+                        return
+                    self.msleep(200)
 
-            self.finished_signal.emit(self.output_path)
+                # 轉換時間格式 hh:mm:ss,mss
+                start_time = self.format_timestamp(segment.start)
+                end_time = self.format_timestamp(segment.end)
+                
+                # 自動轉換為繁體中文
+                traditional_text = self.cc.convert(segment.text.strip())
+
+                srt_block = f"{i}\n{start_time} --> {end_time}\n{traditional_text}\n\n"
+                srt_lines.append(srt_block)
+
+                # 計算並發送進度
+                progress = int((segment.end / total_duration) * 100)
+                progress = min(progress, 100)
+                self.progress_signal.emit(progress)
+                self.log_signal.emit(f"[{start_time} -> {end_time}] {traditional_text}")
+
+            # 寫入 SRT 檔案
+            with open(srt_path, 'w', encoding='utf-8') as f:
+                f.writelines(srt_lines)
+
+            self.progress_signal.emit(100)
+            self.finished_signal.emit(srt_path)
 
         except Exception as e:
             self.error_signal.emit(str(e))
 
+    def format_timestamp(self, seconds: float) -> str:
+        hrs = int(seconds // 3600)
+        mins = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        msecs = int((seconds - int(seconds)) * 1000)
+        return f"{hrs:02d}:{mins:02d}:{secs:02d},{msecs:03d}"
+
+
+# 3. 主 UI 視窗介面
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("影片自動生成字幕工具 (SRT Generator)")
-        self.resize(700, 500)
-        
-        self.selected_video_path = ""
+        self.setWindowTitle("VideoToSRT 影片轉字幕工具 (繁體中文版)")
+        self.resize(650, 480)
+
+        self.video_path = ""
+        self.output_dir = os.path.expanduser("~/Desktop")  # 預設輸出至桌面
+        self.worker = None
+
         self.init_ui()
 
     def init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
+        main_layout = QVBoxLayout(central_widget)
 
-        # 1. 檔案選擇區塊
+        # ---- 1. 選擇影片檔案 ----
         file_layout = QHBoxLayout()
-        self.file_label = QLabel("尚未選擇影片檔案")
-        self.btn_select_file = QPushButton("匯入影片")
-        self.btn_select_file.clicked.connect(self.select_video)
-        file_layout.addWidget(self.file_label, stretch=1)
-        file_layout.addWidget(self.btn_select_file)
-        layout.addLayout(file_layout)
+        self.lbl_file = QLabel("未選擇影片檔案")
+        btn_select_file = QPushButton("選擇影片")
+        btn_select_file.clicked.connect(self.select_video)
+        file_layout.addWidget(self.lbl_file, 1)
+        file_layout.addWidget(btn_select_file)
+        main_layout.addLayout(file_layout)
 
-        # 2. 設定選擇區塊（模型大小與語言）
-        config_layout = QHBoxLayout()
-        
-        config_layout.addWidget(QLabel("模型精準度:"))
+        # ---- 2. 選擇輸出資料夾 ----
+        output_layout = QHBoxLayout()
+        self.lbl_output = QLabel(f"輸出目錄: {self.output_dir}")
+        btn_select_output = QPushButton("更改目錄")
+        btn_select_output.clicked.connect(self.select_output_dir)
+        output_layout.addWidget(self.lbl_output, 1)
+        output_layout.addWidget(btn_select_output)
+        main_layout.addLayout(output_layout)
+
+        # ---- 3. 模型大小選擇 ----
+        model_layout = QHBoxLayout()
+        model_layout.addWidget(QLabel("Whisper 模型大小:"))
         self.combo_model = QComboBox()
-        # tiny/base/small/medium/large-v3，small 適合大多數中文/英文辨識
-        self.combo_model.addItems(["base", "small", "medium"])
-        self.combo_model.setCurrentText("small")
-        config_layout.addWidget(self.combo_model)
+        self.combo_model.addItems(["tiny", "base", "small", "medium"])
+        self.combo_model.setCurrentText("base")
+        model_layout.addWidget(self.combo_model, 1)
+        main_layout.addLayout(model_layout)
 
-        config_layout.addWidget(QLabel("影片講話語言:"))
-        self.combo_lang = QComboBox()
-        self.combo_lang.addItems(["自動偵測 (Auto)", "zh", "en", "ja", "ko"])
-        config_layout.addWidget(self.combo_lang)
+        # ---- 4. 進度條 ----
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        main_layout.addWidget(self.progress_bar)
 
-        layout.addLayout(config_layout)
+        # ---- 5. 控制按鈕 (開始 / 暫停 / 停止) ----
+        btn_layout = QHBoxLayout()
+        self.btn_start = QPushButton("▶️ 開始轉譯")
+        self.btn_pause = QPushButton("⏸️ 暫停")
+        self.btn_stop = QPushButton("⏹️ 停止")
 
-        # 3. 開始執行按鈕
-        self.btn_start = QPushButton("開始轉換並匯出 SRT 字幕")
-        self.btn_start.setStyleSheet("font-size: 16px; padding: 8px;")
+        self.btn_pause.setEnabled(False)
+        self.btn_stop.setEnabled(False)
+
         self.btn_start.clicked.connect(self.start_transcription)
-        layout.addWidget(self.btn_start)
+        self.btn_pause.clicked.connect(self.toggle_pause)
+        self.btn_stop.clicked.connect(self.stop_transcription)
 
-        # 4. 日誌顯示區塊
-        self.log_area = QTextEdit()
-        self.log_area.setReadOnly(True)
-        layout.addWidget(self.log_area)
+        btn_layout.addWidget(self.btn_start)
+        btn_layout.addWidget(self.btn_pause)
+        btn_layout.addWidget(self.btn_stop)
+        main_layout.addLayout(btn_layout)
+
+        # ---- 6. 日誌顯示區域 ----
+        self.txt_log = QTextEdit()
+        self.txt_log.setReadOnly(True)
+        main_layout.addWidget(self.txt_log)
 
     def select_video(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "選擇影片", "", "Video Files (*.mp4 *.mkv *.avi *.mov *.wmv)"
+        path, _ = QFileDialog.getOpenFileName(
+            self, "選擇影片或音訊", "", "Video/Audio Files (*.mp4 *.mkv *.avi *.mov *.mp3 *.wav *.m4a)"
         )
-        if file_path:
-            self.selected_video_path = file_path
-            self.file_label.setText(os.path.basename(file_path))
-            self.log_area.append(f"已載入檔案：{file_path}")
+        if path:
+            self.video_path = path
+            self.lbl_file.setText(os.path.basename(path))
+            self.log(f"已選取檔案: {path}")
+
+    def select_output_dir(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "選擇 SRT 字幕檔輸出路徑", self.output_dir)
+        if dir_path:
+            self.output_dir = dir_path
+            self.lbl_output.setText(f"輸出目錄: {self.output_dir}")
+            self.log(f"已更新輸出目錄: {dir_path}")
 
     def start_transcription(self):
-        if not self.selected_video_path:
-            self.log_area.append("錯誤：請先點擊「匯入影片」選擇檔案！")
+        if not self.video_path:
+            self.log("❌ 請先選擇影片檔案！")
             return
 
-        # 自動生成輸出的 srt 路徑（與影片同檔名、同資料夾）
-        base_name = os.path.splitext(self.selected_video_path)[0]
-        output_srt_path = f"{base_name}.srt"
-
-        model_size = self.combo_model.currentText()
-        language = self.combo_lang.currentText()
-
-        # UI 鎖定
         self.btn_start.setEnabled(False)
-        self.btn_select_file.setEnabled(False)
-        self.log_area.append("\n================ 開始處理 ================")
+        self.btn_pause.setEnabled(True)
+        self.btn_stop.setEnabled(True)
+        self.btn_pause.setText("⏸️ 暫停")
+        self.progress_bar.setValue(0)
+        self.txt_log.clear()
 
-        # 啟動背景工作線程
-        self.thread = TranscribeThread(
-            self.selected_video_path, output_srt_path, model_size, language
-        )
-        self.thread.progress_signal.connect(self.update_log)
-        self.thread.finished_signal.connect(self.on_finished)
-        self.thread.error_signal.connect(self.on_error)
-        self.thread.start()
+        # 啟動 Worker 線程
+        model_size = self.combo_model.currentText()
+        self.worker = TranscribeWorker(self.video_path, self.output_dir, model_size)
+        self.worker.progress_signal.connect(self.progress_bar.setValue)
+        self.worker.log_signal.connect(self.log)
+        self.worker.finished_signal.connect(self.on_finished)
+        self.worker.error_signal.connect(self.on_error)
+        self.worker.start()
 
-    def update_log(self, text: str):
-        self.log_area.append(text)
+    def toggle_pause(self):
+        if self.worker and self.worker.isRunning():
+            if not self.worker._is_paused:
+                self.worker.pause()
+                self.btn_pause.setText("▶️ 繼續")
+            else:
+                self.worker.resume()
+                self.btn_pause.setText("⏸️ 暫停")
 
-    def on_finished(self, output_path: str):
-        self.log_area.append("\n================ 處理完成 ================")
-        self.log_area.append(f"SRT 字幕檔已成功儲存於：\n{output_path}")
+    def stop_transcription(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+            self.reset_btn_states()
+
+    def on_finished(self, srt_path):
+        self.log(f"\n🎉 轉換完成！字幕已儲存至: {srt_path}")
+        self.reset_btn_states()
+
+    def on_error(self, err_msg):
+        self.log(f"\n❌ 發生錯誤: {err_msg}")
+        self.reset_btn_states()
+
+    def reset_btn_states(self):
         self.btn_start.setEnabled(True)
-        self.btn_select_file.setEnabled(True)
+        self.btn_pause.setEnabled(False)
+        self.btn_stop.setEnabled(False)
+        self.btn_pause.setText("⏸️ 暫停")
 
-    def on_error(self, error_msg: str):
-        self.log_area.append(f"\n發生錯誤：{error_msg}")
-        self.btn_start.setEnabled(True)
-        self.btn_select_file.setEnabled(True)
+    def log(self, text):
+        self.txt_log.append(text)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
