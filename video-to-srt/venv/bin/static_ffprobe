@@ -1,0 +1,6 @@
+#!/Users/daniel.chao/Desktop/video-to-srt/video-to-srt/venv/bin/python3
+import sys
+from static_ffmpeg.run import main_static_ffprobe
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(main_static_ffprobe())
