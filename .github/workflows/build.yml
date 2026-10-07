@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*' # 當你在 Git 推送版本標籤 (例如 v1.0.0) 時自動觸發打包
+permissions:
+  contents: write # 確保有權限建立 Release      
 
 jobs:
   build:
