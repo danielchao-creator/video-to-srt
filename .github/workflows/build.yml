@@ -39,12 +39,12 @@ jobs:
     - name: Build with PyInstaller (Windows)
       if: runner.os == 'Windows'
       run: |
-        pyinstaller --noconsole --onefile --collect-all faster_whisper --collect-all PySide6 --name VideoToSRT app.py
+        pyinstaller --noconsole --onefile --collect-all faster_whisper --exclude-module PySide6.Qt3DAnimation --exclude-module PySide6.Qt3DCore --exclude-module PySide6.Qt3DRender --exclude-module PySide6.QtWebEngineCore --name VideoToSRT app.py
 
     - name: Build with PyInstaller (macOS)
       if: runner.os == 'macOS'
       run: |
-        pyinstaller --noconsole --onefile --collect-all faster_whisper --collect-all PySide6 --name VideoToSRT app.py
+        pyinstaller --noconsole --onefile --collect-all faster_whisper --exclude-module PySide6.Qt3DAnimation --exclude-module PySide6.Qt3DCore --exclude-module PySide6.Qt3DRender --exclude-module PySide6.QtWebEngineCore --name VideoToSRT app.py
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
