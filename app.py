@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QProgressBar, QTextEdit, QComboBox
 )
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, Qt
 
 
 # 2. 背景轉譯線程（支援 暫停/恢復/停止、繁體轉換與模型快取目錄重定向）
@@ -130,7 +130,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VideoToSRT 影片轉字幕工具 (繁體中文版)")
-        self.resize(650, 480)
+        self.resize(650, 500)
 
         self.video_path = ""
         self.output_dir = os.path.expanduser("~/Desktop")  # 預設輸出至桌面
@@ -197,6 +197,12 @@ class MainWindow(QMainWindow):
         self.txt_log = QTextEdit()
         self.txt_log.setReadOnly(True)
         main_layout.addWidget(self.txt_log)
+
+        # ---- 7. 開發者署名標籤 (右下角) ----
+        lbl_developer = QLabel("Developed by Daniel 趙偉智")  # 請在此替換為你的名字
+        lbl_developer.setAlignment(Qt.AlignRight)
+        lbl_developer.setStyleSheet("color: #888888; font-size: 11px; padding-top: 2px;")
+        main_layout.addWidget(lbl_developer)
 
     def select_video(self):
         path, _ = QFileDialog.getOpenFileName(
